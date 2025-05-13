@@ -78,7 +78,32 @@ bool audio_async::init(int capture_id, int sample_rate) {
     return true;
 }
 
+bool audio_async::init_stdin(int sample_rate) {
+    m_sample_rate = sample_rate;
+    m_audio.resize((m_sample_rate*m_len_ms)/1000);
+    m_input_mode = MODE_STDIN;
+    m_stdin_eof = false;
+    
+    // Set stdin to binary mode on Windows
+    #ifdef _WIN32
+    _setmode(_fileno(stdin), _O_BINARY);
+    #endif
+    
+    fprintf(stderr, "%s: initialized stdin audio capture, sample rate = %d\n", __func__, m_sample_rate);
+    return true;
+}
+
 bool audio_async::resume() {
+    if (m_input_mode == MODE_STDIN) {
+        if (m_running) {
+            fprintf(stderr, "%s: already running!\n", __func__);
+            return false;
+        }
+        
+        m_running = true;
+        return true;
+    }
+    
     if (!m_dev_id_in) {
         fprintf(stderr, "%s: no audio device to resume!\n", __func__);
         return false;
@@ -115,6 +140,13 @@ bool audio_async::pause() {
 }
 
 bool audio_async::clear() {
+    if (m_input_mode == MODE_STDIN) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_audio_pos = 0;
+        m_audio_len = 0;
+        return true;
+    }
+
     if (!m_dev_id_in) {
         fprintf(stderr, "%s: no audio device to clear!\n", __func__);
         return false;
@@ -168,6 +200,11 @@ void audio_async::callback(uint8_t * stream, int len) {
 }
 
 void audio_async::get(int ms, std::vector<float> & result) {
+    if (m_input_mode == MODE_STDIN && m_running) {
+        // For stdin mode, try to read more data before returning
+        read_from_stdin();
+    }
+
     if (!m_dev_id_in) {
         fprintf(stderr, "%s: no audio device to get audio from!\n", __func__);
         return;
@@ -225,3 +262,47 @@ bool sdl_poll_events() {
 
     return true;
 }
+
+bool audio_async::read_from_stdin() {
+    if (m_stdin_eof) {
+        return false;
+    }
+    
+    // Number of bytes to read (1/10th of a second of audio)
+    const int n_samples_to_read = m_sample_rate / 10;
+    std::vector<float> buf(n_samples_to_read);
+    
+    // Try to read float data directly
+    size_t n_read = fread(buf.data(), sizeof(float), n_samples_to_read, stdin);
+    
+    if (n_read == 0) {
+        if (feof(stdin)) {
+            fprintf(stderr, "%s: reached end of stdin\n", __func__);
+            m_stdin_eof = true;
+            return false;
+        }
+        
+        // No data available right now
+        return true;
+    }
+    
+    // Store the data in the circular buffer
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        
+        if (m_audio_pos + n_read > m_audio.size()) {
+            const size_t n0 = m_audio.size() - m_audio_pos;
+            
+            memcpy(&m_audio[m_audio_pos], buf.data(), n0 * sizeof(float));
+            memcpy(&m_audio[0], buf.data() + n0, (n_read - n0) * sizeof(float));
+        } else {
+            memcpy(&m_audio[m_audio_pos], buf.data(), n_read * sizeof(float));
+        }
+        
+        m_audio_pos = (m_audio_pos + n_read) % m_audio.size();
+        m_audio_len = std::min(m_audio_len + n_read, m_audio.size());
+    }
+    
+    return true;
+}
+

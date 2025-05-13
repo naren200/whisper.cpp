@@ -25,6 +25,15 @@ public:
     bool pause();
     bool clear();
 
+    // start capturing audio from stdin
+    bool init_stdin(int sample_rate);
+    bool read_from_stdin();
+    // Set input mode
+    enum InputMode {
+        MODE_MICROPHONE,
+        MODE_STDIN
+    };
+
     // callback to be called by SDL
     void callback(uint8_t * stream, int len);
 
@@ -39,6 +48,9 @@ private:
 
     std::atomic_bool m_running;
     std::mutex       m_mutex;
+    
+    InputMode m_input_mode = MODE_MICROPHONE;
+    bool m_stdin_eof = false;
 
     std::vector<float> m_audio;
     size_t             m_audio_pos = 0;

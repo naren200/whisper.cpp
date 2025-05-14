@@ -205,7 +205,7 @@ void audio_async::get(int ms, std::vector<float> & result) {
         read_from_stdin();
     }
 
-    if (!m_dev_id_in) {
+    if (m_input_mode != MODE_STDIN && !m_dev_id_in) {
         fprintf(stderr, "%s: no audio device to get audio from!\n", __func__);
         return;
     }
